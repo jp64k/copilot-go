@@ -42,11 +42,12 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 | Qwen 3.5 Plus | 128K | auto |
 
 ## FAQ
-**Do I need a GitHub Copilot or Ollama subscription?**  
-No, this replaces Ollama Cloud entirely. You only need an OpenCode Go subscription. No separate Ollama account, no extra Copilot plan.
-
 **Do I need Ollama installed?**  
 No, this replaces it.  
+
+**Do I need GitHub Copilot or Ollama subscriptions?**  
+No, this replaces Ollama Cloud entirely. You only need an [OpenCode Go](https://opencode.ai/docs/go/) subscription.  
+No separate Ollama account, no extra Copilot plan needed.
 
 **Does this work with VS Code?**  
 No, this doesn't work in VS Code yet. It wasn't a priority since there are already enough VS Code alternatives.
