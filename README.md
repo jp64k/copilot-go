@@ -1,7 +1,8 @@
 # copilot-go
 
-Use your [OpenCode Go](https://opencode.ai/docs/go/) subscription in **VS 2026** GitHub Copilot.  
-A zero-dependency PowerShell proxy that runs locally. Copilot thinks it's talking to Ollama. It's actually talking to opencode.ai.
+Copilot bridge for using [OpenCode Go](https://opencode.ai/docs/go/) models in Visual Studio 2026.  
+A PowerShell proxy with no external dependencies that runs locally.  
+Copilot sees Ollama, you see OpenCode.
 
 ## Quick Start
 
@@ -12,8 +13,8 @@ A zero-dependency PowerShell proxy that runs locally. Copilot thinks it's talkin
 
 ## Why?
 
-Ollama Cloud and OpenCode Go serve similar open models — DeepSeek, GLM, Kimi, etc.  
-But opencode.ai's infrastructure is consistently faster, while also being half the price ($10/mo vs. $20/mo), with generous usage limits. 
+Ollama Cloud and OpenCode Go serve similar open models: DeepSeek, GLM, Kimi, etc.  
+But OpenCode's infrastructure is consistently faster, while also being half the price ($10/mo vs. $20/mo).  
 This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copilot.
 
 ## What You Get
