@@ -588,7 +588,7 @@ function Main {
     Write-Host "  https://github.com/$REPO`n"
 
     if (-not $apiKey) { $apiKey = Prompt-ApiKey }
-    if ($apiKey) { Write-Host "  Loaded API key: $($apiKey.Substring(0,6))..." }
+    if ($apiKey) { Write-Host "  Loaded API key: $($apiKey.Substring(0,6))...`n" }
     else {
         Write-Host "  No API key - models won't load."
         Write-Host "  Set OPENCODE_GO_API_KEY env var or create .opencode_go_key`n"
