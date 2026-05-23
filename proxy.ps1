@@ -496,7 +496,7 @@ function Relay-Sse($clientStream, $upstreamResp) {
     $upstreamStream = $upstreamResp.Content.ReadAsStreamAsync().Result
     $buffer = ""
     $readBuf = New-Object byte[] 8192
-    $chunkCount = 0; $outputTokens = 0; $t0 = Get-Date
+    $chunkCount = 0; $outputTokens = 0; $t0 = Get-Date; $tpsLastUpdate = $t0
     try {
         while ($true) {
             $n = $upstreamStream.Read($readBuf, 0, 8192)
@@ -528,6 +528,14 @@ function Relay-Sse($clientStream, $upstreamResp) {
                         }
                         try { $obj2 = $deltaJson | ConvertFrom-Json } catch { $obj2 = $null }
                         if ($obj2 -and $obj2.usage) { $outputTokens = $obj2.usage.completion_tokens }
+                        $curTokens = [Math]::Max($outputTokens, $chunkCount)
+                        if ($chunkCount % 5 -eq 0 -and $curTokens -gt 0) {
+                            $now = Get-Date
+                            if (($now - $tpsLastUpdate).TotalSeconds -ge 0.3) {
+                                Update-Tps $curTokens $t0
+                                $tpsLastUpdate = $now
+                            }
+                        }
                     } else { $outLines.Add($s) }
                 }
                 $out = ($outLines -join "`n") + "`n`n"
@@ -540,7 +548,7 @@ function Relay-Sse($clientStream, $upstreamResp) {
             $clientStream.Write([System.Text.Encoding]::UTF8.GetBytes($buffer), 0, $buffer.Length)
             $clientStream.Flush()
         }
-        Update-Tps $outputTokens $t0
+        Update-Tps ([Math]::Max($outputTokens, $chunkCount)) $t0
         Write-Log "SSE done chunks=$chunkCount tokens=$outputTokens"
     } catch {
         Write-Log "SSE err: $_"
