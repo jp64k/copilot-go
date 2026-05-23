@@ -601,7 +601,6 @@ function Main {
         if ($ans -eq "" -or $ans -eq "y" -or $ans -eq "yes") {
             Invoke-SelfUpdate $update.Sha
         }
-        Write-Host ""
     }
 
     $tries = 0
@@ -614,12 +613,13 @@ function Main {
         } catch {
             $tries++
             if ($tries -eq $maxTries) {
-                Write-Host "  Could not bind to port $Port or nearby — all taken."; return
+                Write-Host "`n  Could not bind to port $Port or nearby — all taken."; return
             }
             $Port++
         }
     }
-    Write-Host "  Proxy active — Set VS Copilot Ollama endpoint to: http://localhost:$Port"
+
+    Write-Host "`n  Proxy active — Set VS Copilot Ollama endpoint to: http://localhost:$Port"
     Write-Host "  Close this window to stop proxy.`n"
     Write-Log "START port=$Port pid=$PID"
     $host.UI.RawUI.WindowTitle = "copilot-go"
