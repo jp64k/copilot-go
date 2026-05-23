@@ -22,7 +22,7 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 - **SSE streaming** and native tool calling — code search, file search, symbol lookup
 - **Zero dependencies** — runs on PowerShell, built into every Windows 10/11 machine
 - **Self-updating** — checks GitHub for new commits on startup, y/n prompt to update
-- **Token speed** displayed in window title after each response
+- **Token speed** displays in window title in real-time
 
 ## Demo
 
