@@ -83,12 +83,15 @@ function Invoke-SelfUpdate($latestSha) {
     $url = "https://raw.githubusercontent.com/$REPO/main/proxy.ps1"
     Write-Host "  Downloading $url ..."
     try {
-        $newCode = Invoke-RestMethod -Uri $url -TimeoutSec 15 -Headers @{"User-Agent"="copilot-go"}
         $proxyPath = Join-Path $SCRIPT_DIR "proxy.ps1"
-        Set-Content -Path $proxyPath -Value $newCode
+        $wc = New-Object System.Net.WebClient
+        $wc.Headers.Add("User-Agent", "copilot-go")
+        $wc.DownloadFile($url, $proxyPath)
+        $wc.Dispose()
         Set-Content -Path $VERSION_FILE -Value $latestSha -NoNewline
-        Write-Host "  Updated! Restarting ...`n"
-        Start-Process powershell -ArgumentList "-File `"$proxyPath`"" -WindowStyle Normal
+        Write-Host "  Updated. Restarting ...`n"
+        Start-Sleep 1
+        Start-Process powershell -NoNewWindow -ArgumentList "-NoExit -File `"$proxyPath`""
         exit 0
     } catch {
         Write-Host "  Update failed: $_"
