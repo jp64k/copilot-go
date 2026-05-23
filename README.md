@@ -43,18 +43,18 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 
 ## FAQ
 **Do I need a GitHub Copilot or Ollama subscription?**  
-No — this replaces Ollama Cloud entirely. You only need an OpenCode Go subscription. No separate Ollama account, no extra Copilot plan.
+No, this replaces Ollama Cloud entirely. You only need an OpenCode Go subscription. No separate Ollama account, no extra Copilot plan.
 
-**Do I need Ollama installed?** 
-No — this replaces it.  
+**Do I need Ollama installed?**  
+No, this replaces it.  
 
 **Does this work with VS Code?**  
-No — this doesn't work in VS Code yet. It wasn't a priority since there are already enough VS Code alternatives.
+No, this doesn't work in VS Code yet. It wasn't a priority since there are already enough VS Code alternatives.
 
 **Is my API key safe?**  
-The key is stored locally in `.opencode_go_key` (git-ignored) and never leaves your machine except to authenticate with opencode.ai.
+Yes, the key is stored locally in `.opencode_go_key` (git-ignored) and never leaves your machine except to authenticate with opencode.ai.
 
-## Optional Arguments
+## Optional: Arguments
 
 ```powershell
 .\proxy.ps1                # start normally
@@ -63,7 +63,7 @@ The key is stored locally in `.opencode_go_key` (git-ignored) and never leaves y
 .\proxy.ps1 -Port 11436    # custom port
 ```
 
-## Optional Environment Variables
+## Optional: Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
