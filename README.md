@@ -56,8 +56,11 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 | MiniMax M2.5 | 192K | auto |
 | MiMo V2.5 Pro | 256K | auto · Low · Mid · High |
 | MiMo V2.5 | 256K | auto · Low · Mid · High |
+| MiMo V2 Pro | 256K | auto |
+| MiMo V2 Omni | 256K | auto |
 | Qwen 3.6 Plus | 128K | auto |
 | Qwen 3.5 Plus | 128K | auto |
+| HY3 Preview | 128K | auto |
 
 ## FAQ
 ### **Do I need Ollama installed?**  
