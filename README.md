@@ -24,6 +24,14 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 - **Self-updating** — checks GitHub for new commits on startup, y/n prompt to update
 - **Token speed** displayed in window title after each response
 
+## Demo
+
+<img width="500" alt="Demo" src="https://github.com/user-attachments/assets/acafc6a2-5c88-4e27-848a-b50295eca3dc" />  
+
+## Model Selector
+
+<img width="500" alt="ModelSelection" src="https://github.com/user-attachments/assets/9dea953c-5545-4835-a989-33f2d9603000" />
+
 ## Models
 
 | Model | Context | Thinking |
@@ -42,17 +50,17 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 | Qwen 3.5 Plus | 128K | auto |
 
 ## FAQ
-**Do I need Ollama installed?**  
+### **Do I need Ollama installed?**  
 No, this replaces it.  
 
-**Do I need GitHub Copilot or Ollama subscriptions?**  
+### **Do I need GitHub Copilot or Ollama subscriptions?**  
 No, this replaces Ollama Cloud entirely. You only need an [OpenCode Go](https://opencode.ai/docs/go/) subscription.  
 No separate Ollama account, no extra Copilot plan needed.
 
-**Does this work with VS Code?**  
+### **Does this work with VS Code?**  
 No, this doesn't work in VS Code yet. It wasn't a priority since there are already enough VS Code alternatives.
 
-**Is my API key safe?**  
+### **Is my API key safe?**  
 Yes, the key is stored locally in `.opencode_go_key` (git-ignored) and never leaves your machine except to authenticate with opencode.ai.
 
 ## Optional: Arguments
