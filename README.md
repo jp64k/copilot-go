@@ -26,11 +26,21 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 
 ## Demo
 
+### Proxy
+
 <img width="500" alt="Demo" src="https://github.com/user-attachments/assets/acafc6a2-5c88-4e27-848a-b50295eca3dc" />  
 
-## Model Selector
+### Model Selector
 
 <img width="500" alt="ModelSelection" src="https://github.com/user-attachments/assets/9dea953c-5545-4835-a989-33f2d9603000" />
+
+### Chat Mode
+
+<img width="500" alt="ChatMode" src="https://github.com/user-attachments/assets/a22ed780-71f9-4a16-b4b6-a4b5d80a242f" />
+
+### Agent Mode
+
+<img width="500" alt="AgentMode" src="https://github.com/user-attachments/assets/68cc0e19-119c-4818-af61-1ef3853690b6" />
 
 ## Models
 
