@@ -24,7 +24,7 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 - **Zero dependencies** — runs on PowerShell, built into every Windows 10/11 machine
 - **Self-updating** — checks GitHub for new commits on startup, y/n prompt to update
 - **Real-time token speed** in window title
-- **Custom harness** — auto-exports harness per-mode (agent/ask/plan) on first model run, edit to customize Copilot's system prompt
+- **Custom harness** — auto-exports Copilot's system prompt per-mode (agent/ask/plan) on first model run, edit to overwrite Copilot's system prompt (`.copilot_harness-agent.txt`, `.copilot_harness-ask.txt`, `.copilot_harness-plan.txt`)
 - **Multi-key rotation** — store multiple API keys (one per line) in `.opencode_go_key`, auto-switches on rate limit
 
 ## Demo
