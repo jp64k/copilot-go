@@ -24,7 +24,8 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 - **Zero dependencies** — runs on PowerShell, built into every Windows 10/11 machine
 - **Self-updating** — checks GitHub for new commits on startup, y/n prompt to update
 - **Real-time token speed** in window title
-- **Custom harness** — `.copilot_harness.txt` is auto-exported on first model run, edit it to overwrite Copilot's system prompt
+- **Custom harness** — auto-exports harness per-mode (agent/ask/plan) on first model run, edit to customize Copilot's system prompt
+- **Multi-key rotation** — store multiple API keys (one per line) in `.opencode_go_key`, auto-switches on rate limit
 
 ## Demo
 
@@ -52,18 +53,18 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 | DeepSeek V4 Flash | 1M | auto · Low · Mid · High · Max |
 | GLM 5.1 | 203K | auto |
 | GLM 5 | 203K | auto |
-| Kimi K2.6 | 256K | auto |
-| Kimi K2.5 | 256K | auto |
+| Kimi K2.6 | 262K | auto |
+| Kimi K2.5 | 262K | auto |
 | MiniMax M2.7 | 205K | auto |
 | MiniMax M2.5 | 205K | auto |
 | MiMo V2.5 Pro | 1M | auto · Low · Mid · High |
 | MiMo V2.5 | 1M | auto · Low · Mid · High |
 | MiMo V2 Pro | 1M | auto |
-| MiMo V2 Omni | 256K | auto |
+| MiMo V2 Omni | 262K | auto |
 | Qwen 3.7 Max | 1M | auto |
 | Qwen 3.6 Plus | 1M | auto |
 | Qwen 3.5 Plus | 1M | auto |
-| HY3 Preview | 256K | auto |
+| HY3 Preview | 262K | auto |
 
 ## FAQ
 **Do I need Ollama installed?**  
@@ -77,7 +78,8 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 - No, this doesn't work in VS Code yet. It wasn't a priority since there are already enough VS Code alternatives.
 
 **Is my API key safe?**  
-- Yes, the key is stored locally in `.opencode_go_key` (git-ignored) and never leaves your machine except to authenticate with opencode.ai.
+- Yes, keys are stored locally in `.opencode_go_key` (git-ignored) and never leave your machine except to authenticate with opencode.ai.
+- **Multiple keys**: add one per line to `.opencode_go_key`. If a request gets rate-limited (HTTP 429), the proxy automatically rotates to the next key and retries.
 
 ## Optional: Arguments
 
@@ -92,7 +94,7 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 
 | Variable | Default | Description |
 |---|---|---|
-| `OPENCODE_GO_API_KEY` | — | API key (instead of `.opencode_go_key`) |
+| `OPENCODE_GO_API_KEY` | — | API key(s) (instead of `.opencode_go_key`) — separate multiple keys with `,` |
 | `PORT` | `11435` | Proxy listen port |
 
 ## License

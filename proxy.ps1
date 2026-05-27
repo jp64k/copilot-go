@@ -28,25 +28,67 @@ $OPENCODE_BASE = "https://opencode.ai/zen/go/v1"
 $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
 $KEY_FILE = Join-Path $SCRIPT_DIR ".opencode_go_key"
 $VERSION_FILE = Join-Path $SCRIPT_DIR ".version"
-$HARNESS_FILE = Join-Path $SCRIPT_DIR ".copilot_harness.txt"
+
+function Get-HarnessFile($mode) {
+    Join-Path $SCRIPT_DIR ".copilot_harness-$mode.txt"
+}
+
+function Detect-HarnessMode($systemContent) {
+    if ($systemContent -match "automated coding agent") { return "agent" }
+    if ($systemContent -match "planning assistant") { return "plan" }
+    if ($systemContent -match "Markdown formatting") { return "ask" }
+    return "agent"
+}
 
 # API key management
 
-function Get-ApiKey {
-    if (Test-Path $KEY_FILE) { return (Get-Content $KEY_FILE -Raw).Trim() }
-    return $env:OPENCODE_GO_API_KEY
+function Get-ApiKeys {
+    if (Test-Path $KEY_FILE) {
+        $raw = (Get-Content $KEY_FILE -Raw) -replace "`r`n", "`n"
+        $lines = @($raw -split "`n") | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+        if ($lines) { return ,@($lines) }
+    }
+    if ($env:OPENCODE_GO_API_KEY) {
+        $keys = $env:OPENCODE_GO_API_KEY -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }
+        if ($keys) { return ,@($keys) }
+    }
+    return ,@()
+}
+
+function Get-CurrentApiKey {
+    if ($script:ApiKeys.Count -eq 0) { return "" }
+    return $script:ApiKeys[$script:CurrentKeyIndex]
+}
+
+function Rotate-ApiKey {
+    if ($script:ApiKeys.Count -le 1) { return }
+    $script:CurrentKeyIndex = ($script:CurrentKeyIndex + 1) % $script:ApiKeys.Count
+    Write-Log "KEY rotate -> $(($script:CurrentKeyIndex + 1))/$($script:ApiKeys.Count)"
+}
+
+function Mask-Key($key) {
+    $s = "$key"
+    if ($s.Length -le 8) { return $s.Substring(0, [Math]::Min(3, $s.Length)) + "..." }
+    return $s.Substring(0, 6) + "..."
 }
 
 function Prompt-ApiKey {
     Write-Host "  No OpenCode Go API key found."
-    Write-Host "  Get yours at: https://opencode.ai/auth`n"
-    $key = Read-Host "  Paste your API key"
-    if ($key) {
-        Set-Content -Path $KEY_FILE -Value $key -NoNewline
-        Write-Host "  Saved to $KEY_FILE`n"
-        return $key
+    Write-Host "  Get yours at: https://opencode.ai/auth"
+    Write-Host "  For multiple keys, paste them one per line (press Enter twice to finish):`n"
+    $lines = @()
+    while ($true) {
+        $line = Read-Host "  Key"
+        if (-not $line) { break }
+        $lines += $line.Trim()
     }
-    return ""
+    if ($lines.Count -gt 0) {
+        Set-Content -Path $KEY_FILE -Value ($lines -join "`n") -NoNewline
+        $msg = if ($lines.Count -eq 1) { "1 key" } else { "$($lines.Count) keys" }
+        Write-Host "  Saved $msg to $KEY_FILE`n"
+        return @($lines)
+    }
+    return @()
 }
 
 # Versioning and self-update
@@ -458,15 +500,17 @@ function Handle-Chat($req, $bodyObj, $apiKey) {
     }
     foreach ($msg in $bodyObj.messages) {
         if ($msg.role -eq "system") {
-            if (Test-Path $HARNESS_FILE) {
-                $custom = (Get-Content $HARNESS_FILE -Raw).Trim()
+            $mode = Detect-HarnessMode $msg.content
+            $hf = Get-HarnessFile $mode
+            if (Test-Path $hf) {
+                $custom = (Get-Content $hf -Raw).Trim()
                 if ($custom) {
                     $msg.content = $custom
-                    Write-Log "HARNESS injected ($($custom.Length) chars)"
+                    Write-Log "HARNESS injected ($mode, $($custom.Length) chars)"
                 }
             } else {
-                Set-Content -Path $HARNESS_FILE -Value $msg.content -NoNewline
-                Write-Log "HARNESS exported ($($msg.content.Length) chars)"
+                Set-Content -Path $hf -Value $msg.content -NoNewline
+                Write-Log "HARNESS exported ($mode, $($msg.content.Length) chars)"
             }
             break
         }
@@ -478,19 +522,38 @@ function Handle-Chat($req, $bodyObj, $apiKey) {
     }
     $isStream = $bodyObj.stream -eq $true
     $toolNames = if ($bodyObj.tools) { ($bodyObj.tools | ForEach-Object { $_.function.name }) -join ", " } else { "none" }
-    Write-Log "CHAT model=$modelId level=$reasoningLevel msgs=$($bodyObj.messages.Count) tools=[$toolNames] stream=$isStream"
     $bodyJson = $bodyObj | ConvertTo-Json -Depth 10 -Compress
 
-    try {
-        $upstream = Invoke-UpstreamPost "/chat/completions" $bodyJson $apiKey
-    } catch {
-        Write-Error $stream "Upstream error: $_" 502
-        return
+    $keyIdx = $script:CurrentKeyIndex
+    $tried = 0
+    $upstream = $null
+    while ($tried -lt $script:ApiKeys.Count) {
+        $key = $script:ApiKeys[$keyIdx]
+        try {
+            $upstream = Invoke-UpstreamPost "/chat/completions" $bodyJson $key
+        } catch {
+            Write-Log "UPSTREAM err key=$(Mask-Key $key): $_"
+            if ($upstream) { try { $upstream.Dispose() } catch {} }
+            $tried++; $keyIdx = ($keyIdx + 1) % $script:ApiKeys.Count
+            continue
+        }
+        if ($upstream.StatusCode -eq 429) {
+            Write-Log "RATELIMIT key=$(Mask-Key $key) rotating..."
+            try { $upstream.Dispose() } catch {}
+            $tried++; $keyIdx = ($keyIdx + 1) % $script:ApiKeys.Count
+            continue
+        }
+        if (-not $upstream.IsSuccessStatusCode) {
+            $errBody = $upstream.Content.ReadAsStringAsync().Result
+            Write-Error $stream "Upstream error $($upstream.StatusCode): $errBody" 502
+            return
+        }
+        $script:CurrentKeyIndex = $keyIdx
+        Write-Log "CHAT key=$(Mask-Key $key) model=$modelId level=$reasoningLevel msgs=$($bodyObj.messages.Count) tools=[$toolNames] stream=$isStream"
+        break
     }
-
-    if (-not $upstream.IsSuccessStatusCode) {
-        $errBody = $upstream.Content.ReadAsStringAsync().Result
-        Write-Error $stream "Upstream error $($upstream.StatusCode): $errBody" 502
+    if (-not $upstream -or -not $upstream.IsSuccessStatusCode) {
+        Write-Error $stream "All API keys exhausted" 429
         return
     }
 
@@ -516,12 +579,24 @@ function Relay-Sse($clientStream, $upstreamResp) {
     $clientStream.Flush()
 
     $upstreamStream = $upstreamResp.Content.ReadAsStreamAsync().Result
+    $upstreamStream.ReadTimeout = 500
     $buffer = ""
     $readBuf = New-Object byte[] 8192
-    $chunkCount = 0; $outputTokens = 0; $t0 = Get-Date; $tpsLastUpdate = $t0
+    $chunkCount = 0; $outputTokens = 0; $tpsTimer = [System.Diagnostics.Stopwatch]::StartNew()
+    $tpsLastUpdate = 0
     try {
         while ($true) {
-            $n = $upstreamStream.Read($readBuf, 0, 8192)
+            try {
+                $n = $upstreamStream.Read($readBuf, 0, 8192)
+            } catch {
+                $curTokens = [Math]::Max($outputTokens, $chunkCount)
+                $elapsed = $tpsTimer.Elapsed.TotalSeconds
+                if ($elapsed - $tpsLastUpdate -ge 0.5 -and $curTokens -gt 0) {
+                    Update-Tps $curTokens $elapsed
+                    $tpsLastUpdate = $elapsed
+                }
+                continue
+            }
             if ($n -eq 0) { break }
             $buffer += [System.Text.Encoding]::UTF8.GetString($readBuf, 0, $n)
 
@@ -552,10 +627,10 @@ function Relay-Sse($clientStream, $upstreamResp) {
                         if ($obj2 -and $obj2.usage) { $outputTokens = $obj2.usage.completion_tokens }
                         $curTokens = [Math]::Max($outputTokens, $chunkCount)
                         if ($chunkCount % 5 -eq 0 -and $curTokens -gt 0) {
-                            $now = Get-Date
-                            if (($now - $tpsLastUpdate).TotalSeconds -ge 0.3) {
-                                Update-Tps $curTokens $t0
-                                $tpsLastUpdate = $now
+                            $elapsed = $tpsTimer.Elapsed.TotalSeconds
+                            if ($elapsed - $tpsLastUpdate -ge 0.3) {
+                                Update-Tps $curTokens $elapsed
+                                $tpsLastUpdate = $elapsed
                             }
                         }
                     } else { $outLines.Add($s) }
@@ -570,7 +645,7 @@ function Relay-Sse($clientStream, $upstreamResp) {
             $clientStream.Write([System.Text.Encoding]::UTF8.GetBytes($buffer), 0, $buffer.Length)
             $clientStream.Flush()
         }
-        Update-Tps ([Math]::Max($outputTokens, $chunkCount)) $t0
+        Update-Tps ([Math]::Max($outputTokens, $chunkCount)) $tpsTimer.Elapsed.TotalSeconds
         Write-Log "SSE done chunks=$chunkCount tokens=$outputTokens"
     } catch {
         Write-Log "SSE err: $_"
@@ -578,10 +653,9 @@ function Relay-Sse($clientStream, $upstreamResp) {
     $upstreamStream.Dispose()
 }
 
-function Update-Tps($tokens, $startTime) {
-    $elapsed = ((Get-Date) - $startTime).TotalSeconds
-    if ($elapsed -gt 0 -and $tokens -gt 0) {
-        $script:LastTps = [math]::Round($tokens / $elapsed, 1)
+function Update-Tps($tokens, $elapsedSec) {
+    if ($elapsedSec -gt 0 -and $tokens -gt 0) {
+        $script:LastTps = [math]::Round($tokens / $elapsedSec, 1)
     }
     $title = "copilot-go"
     if ($script:LastTps) { $title += " [$($script:LastTps) t/s]" }
@@ -601,7 +675,8 @@ function Main {
         return
     }
 
-    $apiKey = Get-ApiKey
+    $script:ApiKeys = Get-ApiKeys
+    $script:CurrentKeyIndex = 0
     $currentSha = Get-CurrentSha
 
     # Sync .version on first run before displaying tag
@@ -617,8 +692,9 @@ function Main {
     Write-Host "  OpenCode Go models in VS 2026 Copilot"
     Write-Host "  https://github.com/$REPO`n"
 
-    if (-not $apiKey) { $apiKey = Prompt-ApiKey }
-    if ($apiKey) { Write-Host "  Loaded API key: $($apiKey.Substring(0,6))..." }
+    if ($script:ApiKeys.Count -eq 0) { $script:ApiKeys = Prompt-ApiKey }
+    if ($script:ApiKeys.Count -eq 1) { Write-Host "  Loaded API key: $(Mask-Key $script:ApiKeys[0])" }
+    elseif ($script:ApiKeys.Count -gt 1) { Write-Host "  Loaded $($script:ApiKeys.Count) API keys (auto-rotates on rate limit)" }
     else {
         Write-Host "  No API key - models won't load."
         Write-Host "  Set OPENCODE_GO_API_KEY env var or create .opencode_go_key`n"
@@ -673,9 +749,10 @@ function Main {
                 Write-Response $stream 200 "OK" "text/plain; charset=utf-8" "Ollama is running"
             }
             elseif ($method -eq "GET" -and $path -eq "/api/tags") {
-                if (-not $apiKey) { Write-Error $stream "No API key" 500 }
+                $key = Get-CurrentApiKey
+                if (-not $key) { Write-Error $stream "No API key" 500 }
                 else {
-                    try { Write-Response $stream 200 "OK" "application/json; charset=utf-8" (Get-TagsJson $apiKey) }
+                    try { Write-Response $stream 200 "OK" "application/json; charset=utf-8" (Get-TagsJson $key) }
                     catch { Write-Error $stream $_ 502 }
                 }
             }
@@ -686,20 +763,22 @@ function Main {
             elseif ($method -eq "POST" -and $path -eq "/api/show") {
                 try {
                     $b = if ($req.BodyBytes) { [System.Text.Encoding]::UTF8.GetString($req.BodyBytes) | ConvertFrom-Json } else { @{} }
-                    Write-Response $stream 200 "OK" "application/json; charset=utf-8" (Get-ShowJson $b $apiKey)
+                    Write-Response $stream 200 "OK" "application/json; charset=utf-8" (Get-ShowJson $b (Get-CurrentApiKey))
                 } catch { Write-Error $stream "Invalid request" 400 }
             }
             elseif ($method -eq "POST" -and $path -eq "/v1/chat/completions") {
-                if (-not $apiKey) { Write-Error $stream "No API key" 500 }
+                $key = Get-CurrentApiKey
+                if (-not $key) { Write-Error $stream "No API key" 500 }
                 else {
                     try {
                         $b = if ($req.BodyBytes) { [System.Text.Encoding]::UTF8.GetString($req.BodyBytes) | ConvertFrom-Json } else { @{} }
-                        Handle-Chat $req $b $apiKey
+                        Handle-Chat $req $b $key
                     } catch { Write-Error $stream $_ 500 }
                 }
             }
             elseif ($method -eq "POST" -and ($path -eq "/api/chat" -or $path -eq "/api/generate")) {
-                if (-not $apiKey) { Write-Error $stream "No API key" 500 }
+                $key = Get-CurrentApiKey
+                if (-not $key) { Write-Error $stream "No API key" 500 }
                 else {
                     try {
                         $b = if ($req.BodyBytes) { [System.Text.Encoding]::UTF8.GetString($req.BodyBytes) | ConvertFrom-Json } else { @{} }
@@ -708,7 +787,7 @@ function Main {
                             if ($b.system) { $msgs = @(@{role="system";content=$b.system}) + $msgs }
                             $b | Add-Member -NotePropertyName "messages" -NotePropertyValue $msgs -Force
                         }
-                        Handle-Chat $req $b $apiKey
+                        Handle-Chat $req $b $key
                     } catch { Write-Error $stream $_ 500 }
                 }
             }
