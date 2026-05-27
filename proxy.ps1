@@ -319,7 +319,7 @@ function Normalize-Model($raw) {
 # Upstream OpenCode Go HTTP client
 
 $HttpClient = [System.Net.Http.HttpClient]::new()
-$HttpClient.Timeout = [TimeSpan]::FromSeconds(120)
+$HttpClient.Timeout = [TimeSpan]::FromSeconds(300)
 
 function Invoke-UpstreamGet($path, $apiKey) {
     $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, "$OPENCODE_BASE$path")
@@ -501,18 +501,27 @@ function Handle-Chat($req, $bodyObj, $apiKey) {
         $bodyObj | Add-Member -NotePropertyName "reasoning_effort" -NotePropertyValue $THINKING_TAG_PARAMS[$reasoningLevel] -Force
     }
     foreach ($msg in $bodyObj.messages) {
-        if ($msg.role -eq "system") {
+        if ($msg.role -eq "system" -and $msg.content) {
             $mode = Detect-HarnessMode $msg.content
             $hf = Get-HarnessFile $mode
             if (Test-Path $hf) {
-                $custom = (Get-Content $hf -Raw).Trim()
+                try {
+                    $custom = (Get-Content $hf -Raw).Trim()
+                } catch {
+                    Write-Log "HARNESS read err: $_"
+                    $custom = ""
+                }
                 if ($custom) {
                     $msg.content = $custom
                     Write-Log "HARNESS injected ($mode, $($custom.Length) chars)"
                 }
             } else {
-                Set-Content -Path $hf -Value $msg.content -NoNewline
-                Write-Log "HARNESS exported ($mode, $($msg.content.Length) chars)"
+                try {
+                    Set-Content -Path $hf -Value $msg.content -NoNewline
+                    Write-Log "HARNESS exported ($mode, $($msg.content.Length) chars)"
+                } catch {
+                    Write-Log "HARNESS export err: $_"
+                }
             }
             break
         }
@@ -534,10 +543,8 @@ function Handle-Chat($req, $bodyObj, $apiKey) {
         try {
             $upstream = Invoke-UpstreamPost "/chat/completions" $bodyJson $key
         } catch {
-            Write-Log "UPSTREAM err key=$(Mask-Key $key): $_"
-            if ($upstream) { try { $upstream.Dispose() } catch {} }
-            $tried++; $keyIdx = ($keyIdx + 1) % $script:ApiKeys.Count
-            continue
+            Write-Error $stream "Upstream error: $_" 502
+            return
         }
         if ($upstream.StatusCode -eq 429) {
             Write-Log "RATELIMIT key=$(Mask-Key $key) rotating..."
@@ -547,6 +554,7 @@ function Handle-Chat($req, $bodyObj, $apiKey) {
         }
         if (-not $upstream.IsSuccessStatusCode) {
             $errBody = $upstream.Content.ReadAsStringAsync().Result
+            $upstream.Dispose()
             Write-Error $stream "Upstream error $($upstream.StatusCode): $errBody" 502
             return
         }
@@ -559,15 +567,19 @@ function Handle-Chat($req, $bodyObj, $apiKey) {
         return
     }
 
-    if ($isStream) {
-        Relay-Sse $stream $upstream
-    } else {
-        $respBody = $upstream.Content.ReadAsStringAsync().Result
-        $respObj = $respBody | ConvertFrom-Json
-        if (-not (Get-Member -InputObject $respObj -Name "system_fingerprint" -MemberType Properties)) {
-            $respObj | Add-Member -NotePropertyName "system_fingerprint" -NotePropertyValue "fp_ollama" -Force
+    try {
+        if ($isStream) {
+            Relay-Sse $stream $upstream
+        } else {
+            $respBody = $upstream.Content.ReadAsStringAsync().Result
+            $respObj = $respBody | ConvertFrom-Json
+            if (-not (Get-Member -InputObject $respObj -Name "system_fingerprint" -MemberType Properties)) {
+                $respObj | Add-Member -NotePropertyName "system_fingerprint" -NotePropertyValue "fp_ollama" -Force
+            }
+            Write-Response $stream 200 "OK" "application/json; charset=utf-8" ($respObj | ConvertTo-Json -Depth 10 -Compress)
         }
-        Write-Response $stream 200 "OK" "application/json; charset=utf-8" ($respObj | ConvertTo-Json -Depth 10 -Compress)
+    } finally {
+        try { $upstream.Dispose() } catch {}
     }
 }
 
@@ -581,6 +593,8 @@ function Relay-Sse($clientStream, $upstreamResp) {
     $clientStream.Flush()
 
     $upstreamStream = $upstreamResp.Content.ReadAsStreamAsync().Result
+    $decoder = [System.Text.Encoding]::UTF8.GetDecoder()
+    $charBuf = New-Object char[] 8192
     $buffer = ""
     $readBuf = New-Object byte[] 8192
     $chunkCount = 0; $outputTokens = 0; $tpsTimer = [System.Diagnostics.Stopwatch]::StartNew()
@@ -589,7 +603,8 @@ function Relay-Sse($clientStream, $upstreamResp) {
         while ($true) {
             $n = $upstreamStream.Read($readBuf, 0, 8192)
             if ($n -eq 0) { break }
-            $buffer += [System.Text.Encoding]::UTF8.GetString($readBuf, 0, $n)
+            $charCount = $decoder.GetChars($readBuf, 0, $n, $charBuf, 0)
+            $buffer += (New-Object string (,$charBuf[0..($charCount - 1)]))
 
             while ($buffer.Contains("`n`n")) {
                 $idx = $buffer.IndexOf("`n`n")
@@ -633,7 +648,8 @@ function Relay-Sse($clientStream, $upstreamResp) {
             }
         }
         if ($buffer.Trim()) {
-            $clientStream.Write([System.Text.Encoding]::UTF8.GetBytes($buffer), 0, $buffer.Length)
+            $remBytes = [System.Text.Encoding]::UTF8.GetBytes($buffer)
+            $clientStream.Write($remBytes, 0, $remBytes.Length)
             $clientStream.Flush()
         }
         Update-Tps ([Math]::Max($outputTokens, $chunkCount)) $tpsTimer.Elapsed.TotalSeconds
@@ -723,71 +739,78 @@ function Main {
 
     while ($true) {
         try {
-            $client = $listener.AcceptTcpClient()
-            $client.NoDelay = $true
-            $client.ReceiveTimeout = 300000
-            $client.SendTimeout = 300000
-            $stream = $client.GetStream()
+            try {
+                $client = $listener.AcceptTcpClient()
+                $client.NoDelay = $true
+                $client.ReceiveTimeout = 300000
+                $client.SendTimeout = 300000
+                $stream = $client.GetStream()
 
-            $req = Read-HttpRequest $stream
-            if (-not $req) { $client.Close(); continue }
+                $req = Read-HttpRequest $stream
+                if (-not $req) { $client.Close(); continue }
 
-            $method = $req.Method
-            $path = $req.Path
-            Write-Log "REQ $method $path  CL=$($req.ContentLength)  UA=$($req.Headers['User-Agent'])"
+                $method = $req.Method
+                $path = $req.Path
+                Write-Log "REQ $method $path  CL=$($req.ContentLength)  UA=$($req.Headers['User-Agent'])"
 
-            if ($method -eq "GET" -and $path -eq "/") {
-                Write-Response $stream 200 "OK" "text/plain; charset=utf-8" "Ollama is running"
-            }
-            elseif ($method -eq "GET" -and $path -eq "/api/tags") {
-                $key = Get-CurrentApiKey
-                if (-not $key) { Write-Error $stream "No API key" 500 }
-                else {
-                    try { Write-Response $stream 200 "OK" "application/json; charset=utf-8" (Get-TagsJson $key) }
-                    catch { Write-Error $stream $_ 502 }
+                if ($method -eq "GET" -and $path -eq "/") {
+                    Write-Response $stream 200 "OK" "text/plain; charset=utf-8" "Ollama is running"
                 }
-            }
-            elseif ($method -eq "GET" -and $path -eq "/api/version") {
-                $v = @{version="0.6.5"} | ConvertTo-Json -Compress
-                Write-Response $stream 200 "OK" "application/json; charset=utf-8" $v
-            }
-            elseif ($method -eq "POST" -and $path -eq "/api/show") {
-                try {
-                    $b = if ($req.BodyBytes) { [System.Text.Encoding]::UTF8.GetString($req.BodyBytes) | ConvertFrom-Json } else { @{} }
-                    Write-Response $stream 200 "OK" "application/json; charset=utf-8" (Get-ShowJson $b (Get-CurrentApiKey))
-                } catch { Write-Error $stream "Invalid request" 400 }
-            }
-            elseif ($method -eq "POST" -and $path -eq "/v1/chat/completions") {
-                $key = Get-CurrentApiKey
-                if (-not $key) { Write-Error $stream "No API key" 500 }
-                else {
+                elseif ($method -eq "GET" -and $path -eq "/api/tags") {
+                    $key = Get-CurrentApiKey
+                    if (-not $key) { Write-Error $stream "No API key" 500 }
+                    else {
+                        try { Write-Response $stream 200 "OK" "application/json; charset=utf-8" (Get-TagsJson $key) }
+                        catch { Write-Error $stream $_ 502 }
+                    }
+                }
+                elseif ($method -eq "GET" -and $path -eq "/api/version") {
+                    $v = @{version="0.6.5"} | ConvertTo-Json -Compress
+                    Write-Response $stream 200 "OK" "application/json; charset=utf-8" $v
+                }
+                elseif ($method -eq "POST" -and $path -eq "/api/show") {
                     try {
                         $b = if ($req.BodyBytes) { [System.Text.Encoding]::UTF8.GetString($req.BodyBytes) | ConvertFrom-Json } else { @{} }
-                        Handle-Chat $req $b $key
-                    } catch { Write-Error $stream $_ 500 }
+                        Write-Response $stream 200 "OK" "application/json; charset=utf-8" (Get-ShowJson $b (Get-CurrentApiKey))
+                    } catch { Write-Error $stream "Invalid request" 400 }
                 }
-            }
-            elseif ($method -eq "POST" -and ($path -eq "/api/chat" -or $path -eq "/api/generate")) {
-                $key = Get-CurrentApiKey
-                if (-not $key) { Write-Error $stream "No API key" 500 }
+                elseif ($method -eq "POST" -and $path -eq "/v1/chat/completions") {
+                    $key = Get-CurrentApiKey
+                    if (-not $key) { Write-Error $stream "No API key" 500 }
+                    else {
+                        try {
+                            $b = if ($req.BodyBytes) { [System.Text.Encoding]::UTF8.GetString($req.BodyBytes) | ConvertFrom-Json } else { @{} }
+                            Handle-Chat $req $b $key
+                        } catch { Write-Error $stream $_ 500 }
+                    }
+                }
+                elseif ($method -eq "POST" -and ($path -eq "/api/chat" -or $path -eq "/api/generate")) {
+                    $key = Get-CurrentApiKey
+                    if (-not $key) { Write-Error $stream "No API key" 500 }
+                    else {
+                        try {
+                            $b = if ($req.BodyBytes) { [System.Text.Encoding]::UTF8.GetString($req.BodyBytes) | ConvertFrom-Json } else { @{} }
+                            if ($b.prompt) {
+                                $msgs = @(@{role="user";content=$b.prompt})
+                                if ($b.system) { $msgs = @(@{role="system";content=$b.system}) + $msgs }
+                                $b | Add-Member -NotePropertyName "messages" -NotePropertyValue $msgs -Force
+                            }
+                            Handle-Chat $req $b $key
+                        } catch { Write-Error $stream $_ 500 }
+                    }
+                }
                 else {
-                    try {
-                        $b = if ($req.BodyBytes) { [System.Text.Encoding]::UTF8.GetString($req.BodyBytes) | ConvertFrom-Json } else { @{} }
-                        if ($b.prompt) {
-                            $msgs = @(@{role="user";content=$b.prompt})
-                            if ($b.system) { $msgs = @(@{role="system";content=$b.system}) + $msgs }
-                            $b | Add-Member -NotePropertyName "messages" -NotePropertyValue $msgs -Force
-                        }
-                        Handle-Chat $req $b $key
-                    } catch { Write-Error $stream $_ 500 }
+                    Write-Error $stream "Not found" 404
                 }
+                $client.Close()
+            } catch {
+                Write-Log "ERR  $_"
+                try { $client.Close() } catch {}
             }
-            else {
-                Write-Error $stream "Not found" 404
-            }
-            $client.Close()
         } catch {
-            Write-Log "ERR  $_"
+            try { Write-Log "FATAL $_" } catch {}
+            try { $client.Close() } catch {}
+            Start-Sleep 1
         }
     }
     $listener.Stop()
