@@ -19,7 +19,7 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 
 ## What You Get
 
-- **15 models** with thinking level variants for supported models
+- **16 models** with thinking level variants for supported models
 - **SSE streaming** and native tool calling — code search, file search, symbol lookup
 - **Zero dependencies** — runs on PowerShell, built into every Windows 10/11 machine
 - **Self-updating** — checks GitHub for new commits on startup, y/n prompt to update
@@ -49,19 +49,20 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 |---|---|---|
 | DeepSeek V4 Pro | 1M | auto · Low · Mid · High · Max |
 | DeepSeek V4 Flash | 1M | auto · Low · Mid · High · Max |
-| GLM 5.1 | 198K | auto |
-| GLM 5 | 198K | auto |
+| GLM 5.1 | 203K | auto |
+| GLM 5 | 203K | auto |
 | Kimi K2.6 | 256K | auto |
 | Kimi K2.5 | 256K | auto |
-| MiniMax M2.7 | 192K | auto |
-| MiniMax M2.5 | 192K | auto |
-| MiMo V2.5 Pro | 256K | auto · Low · Mid · High |
-| MiMo V2.5 | 256K | auto · Low · Mid · High |
-| MiMo V2 Pro | 256K | auto |
+| MiniMax M2.7 | 205K | auto |
+| MiniMax M2.5 | 205K | auto |
+| MiMo V2.5 Pro | 1M | auto · Low · Mid · High |
+| MiMo V2.5 | 1M | auto · Low · Mid · High |
+| MiMo V2 Pro | 1M | auto |
 | MiMo V2 Omni | 256K | auto |
-| Qwen 3.6 Plus | 128K | auto |
-| Qwen 3.5 Plus | 128K | auto |
-| HY3 Preview | 128K | auto |
+| Qwen 3.7 Max | 1M | auto |
+| Qwen 3.6 Plus | 1M | auto |
+| Qwen 3.5 Plus | 1M | auto |
+| HY3 Preview | 256K | auto |
 
 ## FAQ
 **Do I need Ollama installed?**  
