@@ -28,6 +28,7 @@ $OPENCODE_BASE = "https://opencode.ai/zen/go/v1"
 $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
 $KEY_FILE = Join-Path $SCRIPT_DIR ".opencode_go_key"
 $VERSION_FILE = Join-Path $SCRIPT_DIR ".version"
+$HARNESS_FILE = Join-Path $SCRIPT_DIR ".copilot_harness.txt"
 
 # API key management
 
@@ -454,6 +455,21 @@ function Handle-Chat($req, $bodyObj, $apiKey) {
     $bodyObj.model = $modelId
     if ($reasoningLevel -and $THINKING_TAG_PARAMS[$reasoningLevel]) {
         $bodyObj | Add-Member -NotePropertyName "reasoning_effort" -NotePropertyValue $THINKING_TAG_PARAMS[$reasoningLevel] -Force
+    }
+    foreach ($msg in $bodyObj.messages) {
+        if ($msg.role -eq "system") {
+            if (Test-Path $HARNESS_FILE) {
+                $custom = (Get-Content $HARNESS_FILE -Raw).Trim()
+                if ($custom) {
+                    $msg.content = $custom
+                    Write-Log "HARNESS injected ($($custom.Length) chars)"
+                }
+            } else {
+                Set-Content -Path $HARNESS_FILE -Value $msg.content -NoNewline
+                Write-Log "HARNESS exported ($($msg.content.Length) chars)"
+            }
+            break
+        }
     }
     foreach ($msg in $bodyObj.messages) {
         if ($msg.role -eq "assistant" -and $msg.tool_calls -and (-not (Get-Member -InputObject $msg -Name "reasoning_content" -MemberType Properties))) {

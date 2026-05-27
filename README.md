@@ -23,7 +23,8 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 - **SSE streaming** and native tool calling — code search, file search, symbol lookup
 - **Zero dependencies** — runs on PowerShell, built into every Windows 10/11 machine
 - **Self-updating** — checks GitHub for new commits on startup, y/n prompt to update
-- **Real-time token speed** in window title
+- **Live TPS** in window title — updates every ~300ms during streaming
+- **Custom harness** — `.copilot_harness.txt` is auto-exported on first model run, edit it to overwrite Copilot's system prompt
 
 ## Demo
 

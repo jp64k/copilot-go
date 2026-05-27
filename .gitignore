@@ -1,4 +1,5 @@
 .opencode_go_key
 .env
 .version
+.copilot_harness.txt
 logs/
