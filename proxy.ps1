@@ -113,12 +113,12 @@ $MODEL_INFO = @{
     }
     "glm-5.1" = @{
         display="GLM 5.1"; family="glm"
-        param_count=756000000000; context_length=202752
+        param_count=756000000000; context_length=207872
         capabilities=@("thinking","completion","tools")
     }
     "glm-5" = @{
         display="GLM 5"; family="glm"
-        param_count=540000000000; context_length=202752
+        param_count=540000000000; context_length=207872
         capabilities=@("thinking","completion","tools")
     }
     "kimi-k2.6" = @{
@@ -133,27 +133,27 @@ $MODEL_INFO = @{
     }
     "minimax-m2.7" = @{
         display="MiniMax M2.7"; family="minimax-m2"
-        param_count=229000000000; context_length=196608
+        param_count=229000000000; context_length=209920
         capabilities=@("completion","tools","thinking")
     }
     "minimax-m2.5" = @{
         display="MiniMax M2.5"; family="minimax-m2"
-        param_count=200000000000; context_length=196608
+        param_count=200000000000; context_length=209920
         capabilities=@("completion","tools","thinking")
     }
     "mimo-v2.5-pro" = @{
         display="MiMo V2.5 Pro"; family="mimo"
-        param_count=456000000000; context_length=262144
+        param_count=456000000000; context_length=1048576
         capabilities=@("completion","tools","thinking")
     }
     "mimo-v2.5" = @{
         display="MiMo V2.5"; family="mimo"
-        param_count=456000000000; context_length=262144
+        param_count=456000000000; context_length=1048576
         capabilities=@("completion","tools","thinking")
     }
     "mimo-v2-pro" = @{
         display="MiMo V2 Pro"; family="mimo"
-        param_count=456000000000; context_length=262144
+        param_count=456000000000; context_length=1048576
         capabilities=@("completion","tools")
     }
     "mimo-v2-omni" = @{
@@ -161,19 +161,24 @@ $MODEL_INFO = @{
         param_count=456000000000; context_length=262144
         capabilities=@("completion","tools")
     }
+    "qwen3.7-max" = @{
+        display="Qwen 3.7 Max"; family="qwen3"
+        param_count=0; context_length=1000000
+        capabilities=@("completion","tools","thinking")
+    }
     "qwen3.6-plus" = @{
         display="Qwen 3.6 Plus"; family="qwen3"
-        param_count=72000000000; context_length=131072
+        param_count=72000000000; context_length=1000000
         capabilities=@("completion","tools","thinking")
     }
     "qwen3.5-plus" = @{
         display="Qwen 3.5 Plus"; family="qwen3"
-        param_count=72000000000; context_length=131072
+        param_count=72000000000; context_length=1000000
         capabilities=@("completion","tools","thinking")
     }
     "hy3-preview" = @{
         display="HY3 Preview"; family="hy3"
-        param_count=0; context_length=131072
+        param_count=0; context_length=262144
         capabilities=@("completion","tools")
     }
 }
@@ -207,7 +212,8 @@ function Format-Context($n) {
 function Get-ModelDisplay($modelId, $level="") {
     $info = $MODEL_INFO[$modelId]
     if (-not $info) {
-        return ($modelId -replace "-"," " -replace '\b\w', { $_.Value.ToUpper() })
+        $name = ($modelId -replace "-", " ") -replace '([a-z]{3,})(\d)', '$1 $2'
+        return [regex]::Replace($name, '\b\w', { param($m) $m.Value.ToUpper() })
     }
     $base = "$($info.display) [$(Format-Context $info.context_length)]"
     $label = $THINKING_TAG_LABEL[$level]
