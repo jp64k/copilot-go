@@ -325,6 +325,7 @@ function Invoke-UpstreamGet($path, $apiKey) {
     $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, "$OPENCODE_BASE$path")
     $req.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $apiKey)
     $req.Headers.Add("User-Agent", "copilot-go")
+    $req.Headers.ConnectionClose = $true
     $resp = $HttpClient.SendAsync($req).Result
     $body = $resp.Content.ReadAsStringAsync().Result
     if (-not $resp.IsSuccessStatusCode) { throw "Upstream error $($resp.StatusCode): $body" }
@@ -336,6 +337,7 @@ function Invoke-UpstreamPost($path, $bodyJson, $apiKey) {
     $req.Content = [System.Net.Http.StringContent]::new($bodyJson, [System.Text.Encoding]::UTF8, "application/json")
     $req.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $apiKey)
     $req.Headers.Add("User-Agent", "copilot-go")
+    $req.Headers.ConnectionClose = $true
     return $HttpClient.SendAsync($req, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
 }
 
@@ -579,24 +581,13 @@ function Relay-Sse($clientStream, $upstreamResp) {
     $clientStream.Flush()
 
     $upstreamStream = $upstreamResp.Content.ReadAsStreamAsync().Result
-    $upstreamStream.ReadTimeout = 500
     $buffer = ""
     $readBuf = New-Object byte[] 8192
     $chunkCount = 0; $outputTokens = 0; $tpsTimer = [System.Diagnostics.Stopwatch]::StartNew()
     $tpsLastUpdate = 0
     try {
         while ($true) {
-            try {
-                $n = $upstreamStream.Read($readBuf, 0, 8192)
-            } catch {
-                $curTokens = [Math]::Max($outputTokens, $chunkCount)
-                $elapsed = $tpsTimer.Elapsed.TotalSeconds
-                if ($elapsed - $tpsLastUpdate -ge 0.5 -and $curTokens -gt 0) {
-                    Update-Tps $curTokens $elapsed
-                    $tpsLastUpdate = $elapsed
-                }
-                continue
-            }
+            $n = $upstreamStream.Read($readBuf, 0, 8192)
             if ($n -eq 0) { break }
             $buffer += [System.Text.Encoding]::UTF8.GetString($readBuf, 0, $n)
 
