@@ -1,3 +1,3 @@
 @echo off
 title copilot-go
-powershell -NoExit -File "%~dp0proxy.ps1"
+powershell -NoExit -ExecutionPolicy Bypass -File "%~dp0proxy.ps1"
