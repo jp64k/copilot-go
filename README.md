@@ -62,8 +62,8 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 | MiMo V2 Pro | 1M | auto |
 | MiMo V2 Omni | 262K | auto |
 | Qwen 3.7 Max | 1M | auto |
-| Qwen 3.6 Plus | 1M | auto |
-| Qwen 3.5 Plus | 1M | auto |
+| Qwen 3.6 Plus | 262K | auto |
+| Qwen 3.5 Plus | 262K | auto |
 | HY3 Preview | 262K | auto |
 
 ## FAQ
