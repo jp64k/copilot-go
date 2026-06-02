@@ -19,13 +19,13 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 
 ## What You Get
 
-- **16 models** with thinking level variants for supported models
-- **SSE streaming** and native tool calling — code search, file search, symbol lookup
+- **17 models** with thinking level variants for supported models — auto-updated from [models.dev](https://models.dev) every 12h
+- **SSE streaming** and native tool calling — code search, file search, symbol lookup, autopilot, etc. — all work
+- **Model speed** — TPS shown in real-time in window title
 - **Zero dependencies** — runs on PowerShell, built into every Windows 10/11 machine
 - **Self-updating** — checks GitHub for new commits on startup, y/n prompt to update
-- **Real-time token speed** in window title
-- **Custom harness** — auto-exports Copilot's system prompt per-mode (agent/ask/plan) on first model run, edit to overwrite Copilot's system prompt (`.copilot_harness-agent.txt`, `.copilot_harness-ask.txt`, `.copilot_harness-plan.txt`)
 - **Multi-key rotation** — store multiple API keys (one per line) in `.opencode_go_key`, auto-switches on rate limit
+- **Custom harness** — Copilot's system prompt per-mode (agent/ask/plan) is auto-exported on first model run, edit to overwrite Copilot's system prompt (`.copilot_harness-agent.txt`, `.copilot_harness-ask.txt`, `.copilot_harness-plan.txt`)
 
 ## Demo
 
@@ -55,6 +55,7 @@ This proxy lets you use your OpenCode Go subscription directly in VS 2026's Copi
 | GLM 5 | 203K | auto |
 | Kimi K2.6 | 262K | auto |
 | Kimi K2.5 | 262K | auto |
+| MiniMax M3 | 512K | auto |
 | MiniMax M2.7 | 205K | auto |
 | MiniMax M2.5 | 205K | auto |
 | MiMo V2.5 Pro | 1M | auto · Low · Mid · High |

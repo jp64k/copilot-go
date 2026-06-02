@@ -28,6 +28,7 @@ $OPENCODE_BASE = "https://opencode.ai/zen/go/v1"
 $SCRIPT_DIR = Split-Path -Parent $MyInvocation.MyCommand.Path
 $KEY_FILE = Join-Path $SCRIPT_DIR ".opencode_go_key"
 $VERSION_FILE = Join-Path $SCRIPT_DIR ".version"
+$MODELS_CACHE = Join-Path $SCRIPT_DIR ".models_cache.json"
 
 function Get-HarnessFile($mode) {
     Join-Path $SCRIPT_DIR ".copilot_harness-$mode.txt"
@@ -38,6 +39,112 @@ function Detect-HarnessMode($systemContent) {
     if ($systemContent -match "planning assistant") { return "plan" }
     if ($systemContent -match "Markdown formatting") { return "ask" }
     return "agent"
+}
+
+# models.dev cache — auto-refreshes every 12h
+
+function Sync-ModelsCache {
+    $stale = $true
+    if (Test-Path $MODELS_CACHE) {
+        $age = (Get-Date) - (Get-Item $MODELS_CACHE).LastWriteTime
+        if ($age.TotalHours -lt 12) { $stale = $false }
+    }
+    if ($stale) {
+        try {
+            Write-Host "  Fetching models from models.dev..."
+            $data = $HttpClient.GetStringAsync("https://models.dev/api.json").Result
+            Set-Content -Path $MODELS_CACHE -Value $data -NoNewline
+            Write-Host "  Models refreshed ($([math]::Round($data.Length/1024)) KB)"
+            Write-Log "MODELS refreshed ($($data.Length) bytes)"
+        } catch {
+            Write-Log "MODELS fetch err: $_"
+        }
+    }
+    if (Test-Path $MODELS_CACHE) {
+        try {
+            $script:ModelLookup = @{}
+            $all = Get-Content $MODELS_CACHE -Raw | ConvertFrom-Json
+            foreach ($p in $all.PSObject.Properties) {
+                $providerId = $p.Name
+                $provider = $p.Value
+                foreach ($mid in $provider.models.PSObject.Properties) {
+                    $m = $mid.Value
+                    $shortKey = $m.id
+                    $fullKey = "$providerId/$shortKey"
+                    if (-not $script:ModelLookup[$fullKey]) {
+                        $display = $m.name
+                        if ($display -match '^[a-z0-9][-a-z0-9.]*$' -and $display -eq $shortKey) { $display = $null }
+                        $entry = @{
+                            display = $display
+                            family = if ($m.family) { $m.family } else { $shortKey }
+                            context_length = if ($m.limit.context) { $m.limit.context } else { 131072 }
+                            capabilities = @()
+                        }
+                        if ($m.reasoning) { $entry.capabilities += "thinking" }
+                        if ($m.tool_call) { $entry.capabilities += "tools" }
+                        $entry.capabilities += "completion"
+                        $script:ModelLookup[$fullKey] = $entry
+                        if (-not $script:ModelLookup[$shortKey]) {
+                            $script:ModelLookup[$shortKey] = $entry
+                        }
+                    }
+                }
+            }
+            Write-Log "MODELS lookup built ($($script:ModelLookup.Count) entries)"
+            $script:DISPLAY_TO_ID = @{}
+            foreach ($mid in $MODEL_INFO.Keys) {
+                $d = Get-ModelDisplay $mid
+                $script:DISPLAY_TO_ID[$d] = @($mid, "")
+                $script:DISPLAY_TO_ID["$mid" + ":cloud"] = @($mid, "")
+                $script:DISPLAY_TO_ID[$mid] = @($mid, "")
+                foreach ($lvl in (Get-ThinkingModes $mid)) {
+                    $script:DISPLAY_TO_ID[(Get-ModelDisplay $mid $lvl)] = @($mid, $lvl)
+                    $script:DISPLAY_TO_ID["$mid" + ":cloud:" + $lvl] = @($mid, $lvl)
+                    $script:DISPLAY_TO_ID["$mid" + ":" + $lvl] = @($mid, $lvl)
+                }
+            }
+            foreach ($key in $script:ModelLookup.Keys) {
+                $mid = ($key -split "/")[-1]
+                $isOcGo = $key.StartsWith("opencode-go/")
+                if ($isOcGo -or -not $script:DISPLAY_TO_ID[$mid]) {
+                    $d = Get-ModelDisplay $mid
+                    if ($isOcGo -or -not $script:DISPLAY_TO_ID[$d]) {
+                        $script:DISPLAY_TO_ID[$d] = @($mid, "")
+                        $script:DISPLAY_TO_ID["$mid" + ":cloud"] = @($mid, "")
+                        $script:DISPLAY_TO_ID[$mid] = @($mid, "")
+                        foreach ($lvl in (Get-ThinkingModes $mid)) {
+                            $script:DISPLAY_TO_ID[(Get-ModelDisplay $mid $lvl)] = @($mid, $lvl)
+                            $script:DISPLAY_TO_ID["$mid" + ":cloud:" + $lvl] = @($mid, $lvl)
+                            $script:DISPLAY_TO_ID["$mid" + ":" + $lvl] = @($mid, $lvl)
+                        }
+                    }
+                }
+            }
+        } catch {
+            $script:ModelLookup = @{}
+            $script:DISPLAY_TO_ID = @{}
+            Write-Log "MODELS parse err: $_"
+        }
+    } else {
+        $script:ModelLookup = @{}
+        $script:DISPLAY_TO_ID = @{}
+    }
+}
+
+function Get-ModelMeta($modelId) {
+    if ($script:ModelLookup["opencode-go/$modelId"]) { return $script:ModelLookup["opencode-go/$modelId"] }
+    if ($script:ModelLookup["opencode/$modelId"]) { return $script:ModelLookup["opencode/$modelId"] }
+    if ($script:ModelLookup[$modelId]) { return $script:ModelLookup[$modelId] }
+    foreach ($key in $script:ModelLookup.Keys) {
+        if ($key.EndsWith("/$modelId")) { return $script:ModelLookup[$key] }
+    }
+    return $null
+}
+
+function Lookup-ModelInfo($modelId) {
+    $m = Get-ModelMeta $modelId
+    if ($m) { return $m }
+    return @{}
 }
 
 # API key management
@@ -86,9 +193,9 @@ function Prompt-ApiKey {
         Set-Content -Path $KEY_FILE -Value ($lines -join "`n") -NoNewline
         $msg = if ($lines.Count -eq 1) { "1 key" } else { "$($lines.Count) keys" }
         Write-Host "  Saved $msg to $KEY_FILE`n"
-        return @($lines)
+        return ,@($lines)
     }
-    return @()
+    return ,@()
 }
 
 # Versioning and self-update
@@ -101,130 +208,47 @@ function Get-CurrentSha {
 function Check-Updates {
     $current = Get-CurrentSha
     try {
-        $url = "https://api.github.com/repos/$REPO/commits/main"
-        $data = Invoke-RestMethod -Uri $url -TimeoutSec 5 -Headers @{
-            Accept="application/vnd.github+json"; "User-Agent"="copilot-go"
-        }
+        $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, "https://api.github.com/repos/$REPO/commits/main")
+        $req.Headers.Add("User-Agent", "copilot-go")
+        $resp = $HttpClient.SendAsync($req).Result
+        $body = $resp.Content.ReadAsStringAsync().Result
+        if (-not $resp.IsSuccessStatusCode -or -not $body) { throw "GitHub API returned $($resp.StatusCode)" }
+        $data = $body | ConvertFrom-Json
         $latest = $data.sha
-        # First run: sync .version to latest so we don't prompt
-        if (-not $current -and $latest) {
-            Set-Content -Path $VERSION_FILE -Value $latest -NoNewline
-            $current = $latest
-        }
-        if ($latest -and $current -and $latest -ne $current) {
-            return @{ Update=$true; Sha=$latest; Short=$latest.Substring(0,7) }
-        }
-        $s = if ($latest) { $latest.Substring(0,7) } else { if ($current) { $current.Substring(0,7) } else { "" } }
-        return @{ Update=$false; Sha=""; Short=$s }
+        return @{ Update = ($current -and $latest -and $current -ne $latest); Sha = $latest; Short = $latest.Substring(0, 7) }
     } catch {
-        $s = if ($current) { $current.Substring(0,7) } else { "" }
-        return @{ Update=$false; Sha=""; Short=$s }
+        Write-Log "UPDATE check err: $_"
+        return @{ Update = $false; Sha = ""; Short = "" }
     }
 }
 
-function Invoke-SelfUpdate($latestSha) {
-    $url = "https://raw.githubusercontent.com/$REPO/main/proxy.ps1"
-    Write-Host "  Downloading $url ..."
+function Invoke-SelfUpdate($sha) {
+    Write-Host "  Downloading latest..."
+    $zipUrl = "https://github.com/$REPO/archive/$sha.zip"
+    $zipPath = Join-Path $SCRIPT_DIR "_update.zip"
     try {
-        $proxyPath = Join-Path $SCRIPT_DIR "proxy.ps1"
-        $wc = New-Object System.Net.WebClient
-        $wc.Headers.Add("User-Agent", "copilot-go")
-        $wc.DownloadFile($url, $proxyPath)
-        $wc.Dispose()
-        Set-Content -Path $VERSION_FILE -Value $latestSha -NoNewline
-        Write-Host "  Updated. Restarting ...`n"
-        Start-Sleep 1
-        Start-Process powershell -NoNewWindow -ArgumentList "-NoExit -File `"$proxyPath`""
-        exit 0
+        $bytes = $HttpClient.GetByteArrayAsync($zipUrl).Result
+        [System.IO.File]::WriteAllBytes($zipPath, $bytes)
+        Write-Host "  Extracting..."
+        $extractDir = Join-Path $SCRIPT_DIR "_update"
+        if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractDir)
+        $srcDir = Get-ChildItem $extractDir | Select-Object -First 1
+        $srcPath = Join-Path $srcDir.FullName "*"
+        Copy-Item -Path $srcPath -Destination $SCRIPT_DIR -Recurse -Force
+        Remove-Item -Recurse -Force $extractDir
+        Remove-Item $zipPath
+        Set-Content -Path $VERSION_FILE -Value $sha -NoNewline
+        Write-Host "  Updated to #$($sha.Substring(0,7)). Restart proxy to apply.`n"
     } catch {
         Write-Host "  Update failed: $_"
+        if (Test-Path $zipPath) { Remove-Item $zipPath }
+        if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
     }
 }
 
-# Model metadata, thinking modes, display names
-
-$MODEL_INFO = @{
-    "deepseek-v4-pro" = @{
-        display="DeepSeek V4 Pro"; family="deepseek4"
-        param_count=1600000000000; context_length=1048576
-        capabilities=@("completion","tools","thinking")
-    }
-    "deepseek-v4-flash" = @{
-        display="DeepSeek V4 Flash"; family="deepseek4"
-        param_count=158000000000; context_length=1048576
-        capabilities=@("completion","tools","thinking")
-    }
-    "glm-5.1" = @{
-        display="GLM 5.1"; family="glm"
-        param_count=756000000000; context_length=207872
-        capabilities=@("thinking","completion","tools")
-    }
-    "glm-5" = @{
-        display="GLM 5"; family="glm"
-        param_count=540000000000; context_length=207872
-        capabilities=@("thinking","completion","tools")
-    }
-    "kimi-k2.6" = @{
-        display="Kimi K2.6"; family="kimi-k2"
-        param_count=1040000000000; context_length=262144
-        capabilities=@("vision","thinking","completion","tools")
-    }
-    "kimi-k2.5" = @{
-        display="Kimi K2.5"; family="kimi-k2"
-        param_count=1040000000000; context_length=262144
-        capabilities=@("thinking","completion","tools")
-    }
-    "minimax-m2.7" = @{
-        display="MiniMax M2.7"; family="minimax-m2"
-        param_count=229000000000; context_length=209920
-        capabilities=@("completion","tools","thinking")
-    }
-    "minimax-m2.5" = @{
-        display="MiniMax M2.5"; family="minimax-m2"
-        param_count=200000000000; context_length=209920
-        capabilities=@("completion","tools","thinking")
-    }
-    "mimo-v2.5-pro" = @{
-        display="MiMo V2.5 Pro"; family="mimo"
-        param_count=456000000000; context_length=1048576
-        capabilities=@("completion","tools","thinking")
-    }
-    "mimo-v2.5" = @{
-        display="MiMo V2.5"; family="mimo"
-        param_count=456000000000; context_length=1048576
-        capabilities=@("completion","tools","thinking")
-    }
-    "mimo-v2-pro" = @{
-        display="MiMo V2 Pro"; family="mimo"
-        param_count=456000000000; context_length=1048576
-        capabilities=@("completion","tools")
-    }
-    "mimo-v2-omni" = @{
-        display="MiMo V2 Omni"; family="mimo"
-        param_count=456000000000; context_length=262144
-        capabilities=@("completion","tools")
-    }
-    "qwen3.7-max" = @{
-        display="Qwen 3.7 Max"; family="qwen3"
-        param_count=0; context_length=1000000
-        capabilities=@("completion","tools","thinking")
-    }
-    "qwen3.6-plus" = @{
-        display="Qwen 3.6 Plus"; family="qwen3"
-        param_count=72000000000; context_length=1000000
-        capabilities=@("completion","tools","thinking")
-    }
-    "qwen3.5-plus" = @{
-        display="Qwen 3.5 Plus"; family="qwen3"
-        param_count=72000000000; context_length=1000000
-        capabilities=@("completion","tools","thinking")
-    }
-    "hy3-preview" = @{
-        display="HY3 Preview"; family="hy3"
-        param_count=0; context_length=262144
-        capabilities=@("completion","tools")
-    }
-}
+$MODEL_INFO = @{}
 
 $THINKING_TAG_LABEL = @{ LOW="Low"; MEDIUM="Mid"; HIGH="High"; MAXIMUM="Max" }
 $THINKING_TAG_PARAMS = @{ LOW="low"; MEDIUM="medium"; HIGH="high"; MAXIMUM="max" }
@@ -240,7 +264,7 @@ function Get-ThinkingModes($modelId) {
                  "deepseek-chat","deepseek-reasoner","deepseek-r1","deepseek-v3")
     foreach ($e in $exclude) { if ($cid.Contains($e)) { return @() } }
     if ($cid.Contains("deepseek-v4")) { return @("LOW","MEDIUM","HIGH","MAXIMUM") }
-    if ($cid.Contains("mimo") -and ($MODEL_INFO[$modelId].capabilities -contains "thinking")) {
+    if ($cid.Contains("mimo") -and ((Lookup-ModelInfo $modelId).capabilities -contains "thinking")) {
         return @("LOW","MEDIUM","HIGH")
     }
     return @()
@@ -253,29 +277,17 @@ function Format-Context($n) {
 }
 
 function Get-ModelDisplay($modelId, $level="") {
-    $info = $MODEL_INFO[$modelId]
-    if (-not $info) {
+    $info = Lookup-ModelInfo $modelId
+    if ($info.display) {
+        $name = $info.display
+    } else {
         $name = ($modelId -replace "-", " ") -replace '([a-z]{3,})(\d)', '$1 $2'
-        return [regex]::Replace($name, '\b\w', { param($m) $m.Value.ToUpper() })
+        $name = [regex]::Replace($name, '\b\w', { param($m) $m.Value.ToUpper() })
     }
-    $base = "$($info.display) [$(Format-Context $info.context_length)]"
+    $ctx = if ($info.context_length) { " [$(Format-Context $info.context_length)]" } else { "" }
+    $base = "$name$ctx"
     $label = $THINKING_TAG_LABEL[$level]
     if ($label) { return "$base - $label" } else { return $base }
-}
-
-# Reverse lookup: display name -> (modelId, level)
-$DISPLAY_TO_ID = @{}
-foreach ($mid in $MODEL_INFO.Keys) {
-    $DISPLAY_TO_ID[(Get-ModelDisplay $mid)] = @($mid, "")
-    foreach ($lvl in (Get-ThinkingModes $mid)) {
-        $DISPLAY_TO_ID[(Get-ModelDisplay $mid $lvl)] = @($mid, $lvl)
-    }
-    $DISPLAY_TO_ID["$mid" + ":cloud"] = @($mid, "")
-    $DISPLAY_TO_ID[$mid] = @($mid, "")
-    foreach ($lvl in (Get-ThinkingModes $mid)) {
-        $DISPLAY_TO_ID["$mid" + ":cloud:" + $lvl] = @($mid, $lvl)
-        $DISPLAY_TO_ID["$mid" + ":" + $lvl] = @($mid, $lvl)
-    }
 }
 
 function Normalize-Model($raw) {
@@ -297,23 +309,22 @@ function Normalize-Model($raw) {
     foreach ($level in $THINKING_TAG_PARAMS.Keys) {
         if ($clean -like "*:$level") {
             $mid = $clean.Substring(0, $clean.Length - $level.Length - 1) -replace ":cloud",""
-            if ($MODEL_INFO[$mid]) { return @($mid, $level) }
+            if ((Lookup-ModelInfo $mid).Count -gt 0) { return @($mid, $level) }
         }
         $ll = $level.ToLower()
         if ($clean -like "*:$ll") {
             $mid = $clean.Substring(0, $clean.Length - $ll.Length - 1) -replace ":cloud",""
-            if ($MODEL_INFO[$mid]) { return @($mid, $level) }
+            if ((Lookup-ModelInfo $mid).Count -gt 0) { return @($mid, $level) }
         }
     }
     # Display name lookup
-    if ($DISPLAY_TO_ID[$clean]) { return $DISPLAY_TO_ID[$clean] }
-    foreach ($display in $DISPLAY_TO_ID.Keys) {
-        if ($display.StartsWith($clean)) { return $DISPLAY_TO_ID[$display] }
+    if ($script:DISPLAY_TO_ID[$clean]) { return $script:DISPLAY_TO_ID[$clean] }
+    foreach ($display in $script:DISPLAY_TO_ID.Keys) {
+        if ($display.StartsWith($clean)) { return $script:DISPLAY_TO_ID[$display] }
     }
     $stripped = $clean -replace ":cloud",""
-    if ($MODEL_INFO[$stripped]) { return @($stripped, "") }
-    if ($DISPLAY_TO_ID[$stripped]) { return $DISPLAY_TO_ID[$stripped] }
-    return @($clean, "")
+    if ($script:DISPLAY_TO_ID[$stripped]) { return $script:DISPLAY_TO_ID[$stripped] }
+    return @($stripped, "")
 }
 
 # Upstream OpenCode Go HTTP client
@@ -332,10 +343,116 @@ function Invoke-UpstreamGet($path, $apiKey) {
     return $body | ConvertFrom-Json
 }
 
+function Get-UpstreamPath($modelId) {
+    $cid = $modelId.ToLower()
+    if ($cid.Contains("qwen") -or $cid.Contains("minimax")) { return "/messages" }
+    return "/chat/completions"
+}
+
+function ConvertTo-AnthropicBody($body) {
+    $system = ""
+    $msgs = [System.Collections.Generic.List[object]]::new()
+    foreach ($msg in $body.messages) {
+        if ($msg.role -eq "system") {
+            if ($msg.content) { $system += $(if ($system) { "`n" } else { "" }) + $msg.content }
+        } else {
+            $m = @{ role = $msg.role; content = $msg.content }
+            if ($msg.tool_calls) {
+                $tc = [System.Collections.Generic.List[object]]::new()
+                foreach ($call in $msg.tool_calls) {
+                    $tc.Add(@{ id = $call.id; type = "function"; function = @{ name = $call.function.name; arguments = $call.function.arguments } })
+                }
+                $m.tool_calls = $tc
+            }
+            if ($msg.tool_call_id) { $m.tool_call_id = $msg.tool_call_id }
+            $msgs.Add($m)
+        }
+    }
+    $result = @{ model = $body.model; messages = $msgs; max_tokens = $(if ($body.max_tokens) { $body.max_tokens } else { 4096 }) }
+    if ($system) { $result.system = $system }
+    if ($body.stream) { $result.stream = $body.stream }
+    if ($body.tools) {
+        $atools = [System.Collections.Generic.List[object]]::new()
+        foreach ($t in $body.tools) {
+            $at = @{ name = $t.function.name; description = $t.function.description }
+            if ($t.function.parameters) { $at.input_schema = $t.function.parameters }
+            $atools.Add($at)
+        }
+        $result.tools = $atools
+    }
+    if ($body.temperature) { $result.temperature = $body.temperature }
+    return $result
+}
+
+function ConvertFrom-AnthropicResponse($resp, $modelId) {
+    $text = ""; $thinking = ""; $toolCalls = @()
+    if ($resp.content) {
+        foreach ($c in $resp.content) {
+            if ($c.type -eq "text") { $text += $c.text }
+            elseif ($c.type -eq "thinking") { $thinking += $c.thinking }
+            elseif ($c.type -eq "tool_use") {
+                $toolCalls += @{ id = $c.id; type = "function"; function = @{ name = $c.name; arguments = ($c.input | ConvertTo-Json -Depth 5 -Compress) } }
+            }
+        }
+    }
+    $msg = @{ role = $resp.role; content = $(if ($text) { $text } else { $null }) }
+    if ($thinking) { $msg.reasoning_content = $thinking }
+    if ($toolCalls.Count -gt 0) { $msg.tool_calls = $toolCalls }
+    $usage = if ($resp.usage) { @{
+        prompt_tokens = $resp.usage.input_tokens
+        completion_tokens = $resp.usage.output_tokens
+        total_tokens = $resp.usage.input_tokens + $resp.usage.output_tokens
+    }} else { $null }
+    $finish = if ($resp.stop_reason -eq "end_turn") { "stop" } elseif ($resp.stop_reason -eq "tool_use") { "tool_calls" } elseif ($resp.stop_reason -eq "max_tokens") { "length" } else { "stop" }
+    $result = @{
+        id = $resp.id; object = "chat.completion"; model = $modelId
+        choices = @(@{ index = 0; message = $msg; finish_reason = $finish })
+    }
+    if ($usage) { $result.usage = $usage }
+    return $result
+}
+
+function Convert-AnthropicChunk($json, $refId, $refModel) {
+    try { $a = $json | ConvertFrom-Json } catch { return $null }
+    $type = $a.type
+    if ($type -eq "message_start") {
+        return @{ id = $a.message.id; model = $a.message.model; object = "chat.completion.chunk"; choices = @(@{ index = 0; delta = @{ role = "assistant" }; finish_reason = $null }) }
+    }
+    if ($type -eq "content_block_start") {
+        $cb = $a.content_block
+        if ($cb.type -eq "text") { return @{ id = $refId; object = "chat.completion.chunk"; model = $refModel; choices = @(@{ index = 0; delta = @{ content = "" }; finish_reason = $null }) } }
+        if ($cb.type -eq "thinking") { return @{ id = $refId; object = "chat.completion.chunk"; model = $refModel; choices = @(@{ index = 0; delta = @{ reasoning_content = "" }; finish_reason = $null }) } }
+        if ($cb.type -eq "tool_use") { return @{ id = $refId; object = "chat.completion.chunk"; model = $refModel; choices = @(@{ index = 0; delta = @{ tool_calls = @(@{ index = 0; id = $cb.id; type = "function"; function = @{ name = $cb.name; arguments = "" } }) }; finish_reason = $null }) } }
+    }
+    if ($type -eq "content_block_delta") {
+        $d = $a.delta
+        if ($d.type -eq "text_delta") { return @{ id = $refId; object = "chat.completion.chunk"; model = $refModel; choices = @(@{ index = 0; delta = @{ content = $d.text }; finish_reason = $null }) } }
+        if ($d.type -eq "thinking_delta") { return @{ id = $refId; object = "chat.completion.chunk"; model = $refModel; choices = @(@{ index = 0; delta = @{ reasoning_content = $d.thinking }; finish_reason = $null }) } }
+        if ($d.type -eq "input_json_delta") {
+            $tc = @(@{ index = 0; function = @{ arguments = $d.partial_json } })
+            return @{ id = $refId; object = "chat.completion.chunk"; model = $refModel; choices = @(@{ index = 0; delta = @{ tool_calls = $tc }; finish_reason = $null }) }
+        }
+    }
+    if ($type -eq "content_block_stop") { return $null }
+    if ($type -eq "message_delta") {
+        $finish = if ($a.delta.stop_reason -eq "end_turn") { "stop" } elseif ($a.delta.stop_reason -eq "tool_use") { "tool_calls" } else { "stop" }
+        $usage = if ($a.usage) { @{ prompt_tokens = $a.usage.input_tokens; completion_tokens = $a.usage.output_tokens; total_tokens = $a.usage.input_tokens + $a.usage.output_tokens } } else { $null }
+        $result = @{ id = $refId; object = "chat.completion.chunk"; model = $refModel; choices = @(@{ index = 0; delta = @{}; finish_reason = $finish }) }
+        if ($usage) { $result.usage = $usage }
+        return $result
+    }
+    if ($type -eq "message_stop") { return $null }
+    return $null
+}
+
 function Invoke-UpstreamPost($path, $bodyJson, $apiKey) {
     $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "$OPENCODE_BASE$path")
     $req.Content = [System.Net.Http.StringContent]::new($bodyJson, [System.Text.Encoding]::UTF8, "application/json")
-    $req.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $apiKey)
+    if ($path -eq "/messages") {
+        $req.Headers.Add("x-api-key", $apiKey)
+    } else {
+        $req.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new("Bearer", $apiKey)
+    }
     $req.Headers.Add("User-Agent", "copilot-go")
     $req.Headers.ConnectionClose = $true
     return $HttpClient.SendAsync($req, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).Result
@@ -397,11 +514,13 @@ function Read-HttpRequest($stream) {
             # Extract body bytes that were already read past headers
             $bodyStart = $headerEnd + 4
             $remaining = $arr.Length - $bodyStart
-            if ($remaining -gt 0 -and $contentLength -gt 0) {
+            if ($contentLength -gt 0) {
                 $bodyBytes = New-Object byte[] $contentLength
-                $copyLen = [Math]::Min($remaining, $contentLength)
-                [Array]::Copy($arr, $bodyStart, $bodyBytes, 0, $copyLen)
-                $bodyRead = $copyLen
+                if ($remaining -gt 0) {
+                    $copyLen = [Math]::Min($remaining, $contentLength)
+                    [Array]::Copy($arr, $bodyStart, $bodyBytes, 0, $copyLen)
+                    $bodyRead = $copyLen
+                } else { $bodyRead = 0 }
                 # Read remaining body if any
                 while ($bodyRead -lt $contentLength) {
                     $n2 = $stream.Read($bodyBytes, $bodyRead, $contentLength - $bodyRead)
@@ -447,7 +566,7 @@ function Get-TagsJson($apiKey) {
     $models = [System.Collections.Generic.List[object]]::new()
     foreach ($m in $data.data) {
         $mid = $m.id
-        $info = if ($MODEL_INFO[$mid]) { $MODEL_INFO[$mid] } else { @{} }
+        $info = Lookup-ModelInfo $mid
         $models.Add((New-ModelEntry (Get-ModelDisplay $mid) ("$mid" + ":cloud") $mid $info))
         foreach ($level in (Get-ThinkingModes $mid)) {
             $models.Add((New-ModelEntry (Get-ModelDisplay $mid $level) ("$mid" + ":cloud:" + $level) $mid $info))
@@ -475,7 +594,7 @@ function Get-ShowJson($body, $apiKey) {
     $raw = if ($body.model) { $body.model } else { $body.name }
     $result = Normalize-Model $raw
     $modelName = $result[0]
-    $info = if ($MODEL_INFO[$modelName]) { $MODEL_INFO[$modelName] } else { @{} }
+    $info = Lookup-ModelInfo $modelName
     $family = if ($info.family) { $info.family } else { $modelName }
     $ctx = if ($info.context_length) { $info.context_length } else { 131072 }
     $mi = @{ "general.parameter_count" = if ($info.param_count) { $info.param_count } else { 0 } }
@@ -533,6 +652,12 @@ function Handle-Chat($req, $bodyObj, $apiKey) {
     }
     $isStream = $bodyObj.stream -eq $true
     $toolNames = if ($bodyObj.tools) { ($bodyObj.tools | ForEach-Object { $_.function.name }) -join ", " } else { "none" }
+    Write-Log "CHAT rawModel=$rawModel modelId=$modelId level=$reasoningLevel msgs=$($bodyObj.messages.Count) tools=[$toolNames] stream=$isStream"
+    
+    $isAnthropic = (Get-UpstreamPath $modelId) -eq "/messages"
+    if ($isAnthropic) {
+        $bodyObj = ConvertTo-AnthropicBody $bodyObj
+    }
     $bodyJson = $bodyObj | ConvertTo-Json -Depth 10 -Compress
 
     $keyIdx = $script:CurrentKeyIndex
@@ -541,7 +666,7 @@ function Handle-Chat($req, $bodyObj, $apiKey) {
     while ($tried -lt $script:ApiKeys.Count) {
         $key = $script:ApiKeys[$keyIdx]
         try {
-            $upstream = Invoke-UpstreamPost "/chat/completions" $bodyJson $key
+            $upstream = Invoke-UpstreamPost (Get-UpstreamPath $modelId) $bodyJson $key
         } catch {
             Write-Error $stream "Upstream error: $_" 502
             return
@@ -559,7 +684,6 @@ function Handle-Chat($req, $bodyObj, $apiKey) {
             return
         }
         $script:CurrentKeyIndex = $keyIdx
-        Write-Log "CHAT key=$(Mask-Key $key) model=$modelId level=$reasoningLevel msgs=$($bodyObj.messages.Count) tools=[$toolNames] stream=$isStream"
         break
     }
     if (-not $upstream -or -not $upstream.IsSuccessStatusCode) {
@@ -568,22 +692,25 @@ function Handle-Chat($req, $bodyObj, $apiKey) {
     }
 
     try {
-        if ($isStream) {
-            Relay-Sse $stream $upstream
-        } else {
-            $respBody = $upstream.Content.ReadAsStringAsync().Result
-            $respObj = $respBody | ConvertFrom-Json
-            if (-not (Get-Member -InputObject $respObj -Name "system_fingerprint" -MemberType Properties)) {
-                $respObj | Add-Member -NotePropertyName "system_fingerprint" -NotePropertyValue "fp_ollama" -Force
-            }
-            Write-Response $stream 200 "OK" "application/json; charset=utf-8" ($respObj | ConvertTo-Json -Depth 10 -Compress)
+    if ($isStream) {
+        Relay-Sse $stream $upstream $modelId $isAnthropic
+    } else {
+        $respBody = $upstream.Content.ReadAsStringAsync().Result
+        $respObj = $respBody | ConvertFrom-Json
+        if ($isAnthropic) {
+            $respObj = ConvertFrom-AnthropicResponse $respObj $modelId
         }
+        if (-not (Get-Member -InputObject $respObj -Name "system_fingerprint" -MemberType Properties)) {
+            $respObj | Add-Member -NotePropertyName "system_fingerprint" -NotePropertyValue "fp_ollama" -Force
+        }
+        Write-Response $stream 200 "OK" "application/json; charset=utf-8" ($respObj | ConvertTo-Json -Depth 10 -Compress)
+    }
     } finally {
         try { $upstream.Dispose() } catch {}
     }
 }
 
-function Relay-Sse($clientStream, $upstreamResp) {
+function Relay-Sse($clientStream, $upstreamResp, $modelId, $isAnthropic) {
     $headers = "HTTP/1.1 200 OK`r`n" +
                "Content-Type: text/event-stream`r`n" +
                "Cache-Control: no-cache`r`n" +
@@ -599,6 +726,7 @@ function Relay-Sse($clientStream, $upstreamResp) {
     $readBuf = New-Object byte[] 8192
     $chunkCount = 0; $outputTokens = 0; $tpsTimer = [System.Diagnostics.Stopwatch]::StartNew()
     $tpsLastUpdate = 0
+    $antId = ""; $antModel = ""
     try {
         while ($true) {
             $n = $upstreamStream.Read($readBuf, 0, 8192)
@@ -615,30 +743,41 @@ function Relay-Sse($clientStream, $upstreamResp) {
                 foreach ($line in $lines) {
                     $s = $line.Trim()
                     if ($s -eq "") { $outLines.Add(""); continue }
-                    if ($s.StartsWith("data: ") -and $s -ne "data: [DONE]") {
-                        $chunkCount++
-                        $deltaJson = $s.Substring(6)
-                        if ($deltaJson -notmatch 'system_fingerprint') {
-                            $deltaJson = $deltaJson -replace '^{(.*)', '{ "system_fingerprint":"fp_ollama", $1'
-                        }
-                        $outLines.Add("data: " + $deltaJson)
-                        if ($chunkCount -eq 1) {
-                            try { $obj = $deltaJson | ConvertFrom-Json } catch { $obj = $null }
-                            if ($obj) {
-                                $delta = $obj.choices[0].delta
-                                Write-Log "SSE chunk1 hasContent=$($delta.content -ne $null) hasTools=$($delta.tool_calls -ne $null) finish=$($obj.choices[0].finish_reason)"
+                    if (($s -like "data: *" -or $s -like "data:*") -and $s -ne "data: [DONE]") {
+                        $deltaJson = if ($s[5] -eq ' ') { $s.Substring(6) } else { $s.Substring(5) }
+                        if ($isAnthropic) {
+                            $oaChunk = Convert-AnthropicChunk $deltaJson $antId $antModel
+                            if ($oaChunk) {
+                                if ($oaChunk.id) { $antId = $oaChunk.id; $antModel = $oaChunk.model }
+                                $outLines.Add("data: " + ($oaChunk | ConvertTo-Json -Depth 5 -Compress))
                             }
+                        } else {
+                            $chunkCount++
+                            if ($deltaJson -notmatch 'system_fingerprint') {
+                                $deltaJson = $deltaJson -replace '^{(.*)', '{ "system_fingerprint":"fp_ollama", $1'
+                            }
+                            $outLines.Add("data: " + $deltaJson)
                         }
-                        try { $obj2 = $deltaJson | ConvertFrom-Json } catch { $obj2 = $null }
-                        if ($obj2 -and $obj2.usage) { $outputTokens = $obj2.usage.completion_tokens }
+                        if (-not $isAnthropic) {
+                            if ($chunkCount -eq 1) {
+                                try { $obj = $deltaJson | ConvertFrom-Json } catch { $obj = $null }
+                                if ($obj) {
+                                    $delta = $obj.choices[0].delta
+                                    Write-Log "SSE chunk1 hasContent=$($delta.content -ne $null) hasTools=$($delta.tool_calls -ne $null) finish=$($obj.choices[0].finish_reason)"
+                                }
+                            }
+                            try { $obj2 = $deltaJson | ConvertFrom-Json } catch { $obj2 = $null }
+                            if ($obj2 -and $obj2.usage) { $outputTokens = $obj2.usage.completion_tokens }
+                        }
                         $curTokens = [Math]::Max($outputTokens, $chunkCount)
-                        if ($chunkCount % 5 -eq 0 -and $curTokens -gt 0) {
+                        if (($isAnthropic -or $chunkCount % 5 -eq 0) -and $curTokens -gt 0) {
                             $elapsed = $tpsTimer.Elapsed.TotalSeconds
                             if ($elapsed - $tpsLastUpdate -ge 0.3) {
                                 Update-Tps $curTokens $elapsed
                                 $tpsLastUpdate = $elapsed
                             }
                         }
+                        if (-not $isAnthropic) { $chunkCount++ } else { $chunkCount++ }
                     } else { $outLines.Add($s) }
                 }
                 $out = ($outLines -join "`n") + "`n`n"
@@ -653,7 +792,8 @@ function Relay-Sse($clientStream, $upstreamResp) {
             $clientStream.Flush()
         }
         Update-Tps ([Math]::Max($outputTokens, $chunkCount)) $tpsTimer.Elapsed.TotalSeconds
-        Write-Log "SSE done chunks=$chunkCount tokens=$outputTokens"
+        $modelLabel = if ($isAnthropic) { $antModel } else { "" }
+        Write-Log "SSE done chunks=$chunkCount tokens=$outputTokens model=$modelLabel"
     } catch {
         Write-Log "SSE err: $_"
     }
@@ -698,6 +838,8 @@ function Main {
     Write-Host "  copilot-go ($tagStr)"
     Write-Host "  OpenCode Go models in VS 2026 Copilot"
     Write-Host "  https://github.com/$REPO`n"
+
+    Sync-ModelsCache
 
     if ($script:ApiKeys.Count -eq 0) { $script:ApiKeys = Prompt-ApiKey }
     if ($script:ApiKeys.Count -eq 1) { Write-Host "  Loaded API key: $(Mask-Key $script:ApiKeys[0])" }

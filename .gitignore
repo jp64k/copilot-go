@@ -2,4 +2,5 @@
 .env
 .version
 .copilot_harness*.txt
+.models_cache.json
 logs/
